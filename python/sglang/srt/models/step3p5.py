@@ -4,9 +4,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from sglang.srt.distributed import (
-    tensor_model_parallel_all_reduce,
-)
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
 from sglang.srt.eplb.expert_location import ModelConfigForExpertLocation
 from sglang.srt.eplb.expert_location_dispatch import ExpertLocationDispatchInfo
@@ -15,6 +12,7 @@ from sglang.srt.layers.dp_attention import (
     is_dp_attention_enabled,
 )
 from sglang.srt.layers.layer_boundary import (
+    SumGroup,
     declare_attn,
     declare_ffn,
     make_stages,
@@ -39,6 +37,7 @@ from sglang.srt.layers.moe.topk import StandardTopKOutput, TopK
 from sglang.srt.layers.moe.utils import (
     RoutingMethodType,
     filter_moe_weight_param_global_expert,
+    post_experts_output_is_complete,
 )
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
@@ -50,7 +49,7 @@ from sglang.srt.layers.vocab_parallel_embedding import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
-from sglang.srt.runtime_context import get_exec, get_forward, get_parallel, get_stream
+from sglang.srt.runtime_context import get_exec, get_parallel, get_stream
 from sglang.srt.utils import add_prefix, is_cuda, is_non_idle_and_non_empty, make_layers
 
 Step3p5Config = None
@@ -192,6 +191,19 @@ class Step3p5MoEMLP(nn.Module):
             return self.forward_normal(hidden_states)
         else:
             return self.forward_deepep(hidden_states, forward_batch)
+
+    def output_sum(self) -> Optional[SumGroup]:
+        """The sum this block's output owes when its reduction is skipped: none
+        after an expert combine that sums each token, else the TP sum."""
+        backend = get_moe_a2a_backend()
+        if (
+            backend.is_deepep()
+            or backend.is_ascend_fuseep()
+            or post_experts_output_is_complete(is_tp_path=True)
+            or get_parallel().tp_size == 1
+        ):
+            return None
+        return SumGroup.TP
 
     def get_moe_weights(self):
         return [
@@ -610,16 +622,15 @@ class Step3p5DecoderLayer(nn.Module):
 
         if self.use_moe:
             with self.ffn_boundary.exit(forward_batch) as ffn_exit:
-                # Both share_expert and MoE return unreduced (TP-partial) outputs.
-                # Combine them first, then do a single all-reduce — saving one
-                # full-TP all-reduce per layer.
-                # Force fuse_mlp_allreduce=True so MoE skips its internal AR.
-                share_output = self.share_expert(hidden_states)
-                with get_forward().scoped(fuse_mlp_allreduce=True):
+                # The routed and shared experts each owe a TP sum; complete_parts
+                # runs one all-reduce for both.
+                with ffn_exit.separate_parts():
+                    share_output = self.share_expert(hidden_states)
                     moe_output = self.moe(hidden_states, forward_batch)
-                hidden_states = moe_output + share_output
-                if not ffn_exit.fuse_mlp_allreduce and not ffn_exit.mlp_reduce_scatter:
-                    hidden_states = tensor_model_parallel_all_reduce(hidden_states)
+                hidden_states = ffn_exit.complete_parts(
+                    (moe_output, self.moe.output_sum()),
+                    (share_output, SumGroup.TP if get_parallel().tp_size > 1 else None),
+                )
             return ffn_exit.finish(hidden_states)
 
         with self.ffn_boundary.exit(forward_batch) as ffn_exit:

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from functools import partial
 from typing import Callable, Optional, Tuple
 
@@ -32,6 +33,7 @@ from sglang.srt.layers.layer_boundary.adapters.attention import get_attn_tp_cont
 from sglang.srt.layers.layer_boundary.layout import (
     SumGroup,
     _ffn_has_tokens,
+    _same_ranks,
     _sum_group,
 )
 from sglang.srt.layers.layer_boundary.ops import (
@@ -471,6 +473,8 @@ class FfnExit:
 
     The three flags are published on get_forward() only inside the context.
     finish(output) uses the same selected action after successful compute.
+    An output computed in parts that owe different sums is combined with
+    complete_parts(), after running the parts inside separate_parts().
     """
 
     __slots__ = (
@@ -478,6 +482,7 @@ class FfnExit:
         "defer_moe_finalize",
         "fuse_mlp_allreduce",
         "mlp_reduce_scatter",
+        "_sum_group",
         "_complete",
         "_update",
         "_declared_sum",
@@ -500,6 +505,7 @@ class FfnExit:
         self.fuse_mlp_allreduce = completion.fuse_mlp_allreduce
         self.mlp_reduce_scatter = completion.mlp_reduce_scatter
         self._complete = completion.complete
+        self._sum_group = steps.output.group
         self._update = steps.output.update
         self._declared_sum = boundary._sum_owed_after_skip(
             steps, completion.mlp_reduce_scatter
@@ -516,6 +522,62 @@ class FfnExit:
 
     def __exit__(self, *exc_info):
         return self._scope.__exit__(*exc_info)
+
+    @contextmanager
+    def separate_parts(self):
+        """Scope compute whose output complete_parts() will combine: compute
+        modules inside it skip their own output reductions, and
+        complete_parts() completes what each part still owes."""
+        with get_forward().scoped(fuse_mlp_allreduce=True):
+            yield
+
+    def complete_parts(self, *parts):
+        """Add the parts of this FFN's output and complete the sum it owes.
+
+        Args:
+            *parts: (tensor, owes) pairs in the order they are added. owes is
+                the SumGroup a part's sum is still owed over, or None for a
+                part that is complete on these rows (for example the output
+                of an expert combine that already summed each token).
+
+        When the exit leaves the sum to compute, the parts owing one group are
+        added and all-reduced once, and complete parts are added after. When a
+        later step completes the sum (a skip flag is published), every owing
+        part must owe the output's declared group, and a complete part is added
+        on that group's rank 0 only, so the later sum counts it once.
+
+        Returns:
+            The combined output, to pass to finish().
+        """
+        owing = [(value, group) for value, group in parts if group is not None]
+        complete = [value for value, group in parts if group is None]
+        total = None
+        if not (self.fuse_mlp_allreduce or self.mlp_reduce_scatter):
+            for group in dict.fromkeys(group for _, group in owing):
+                partial_sum = None
+                for value, owed in owing:
+                    if owed is group:
+                        partial_sum = (
+                            value if partial_sum is None else partial_sum + value
+                        )
+                partial_sum = _sum_group(group).all_reduce(partial_sum)
+                total = partial_sum if total is None else total + partial_sum
+            for value in complete:
+                total = value if total is None else total + value
+            return total
+        declared = _sum_group(self._sum_group) if self._sum_group else None
+        for _, group in owing:
+            if declared is None or not _same_ranks(_sum_group(group), declared):
+                raise NotImplementedError(
+                    f"an output part owes {group} but the boundary completes "
+                    f"{self._sum_group}"
+                )
+        for value, _ in owing:
+            total = value if total is None else total + value
+        if complete and (declared is None or declared.rank_in_group == 0):
+            for value in complete:
+                total = value if total is None else total + value
+        return total
 
     def finish(self, hidden_states: torch.Tensor):
         """Complete or carry this output, preserving its producer update."""
