@@ -1076,6 +1076,23 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
 
         if ret.forward_mode.is_idle():
             ret.positions = torch.empty((0,), dtype=torch.int64, device=device)
+            # Mrope models replace `positions` with `mrope_positions` inside
+            # the model forward. An idle batch normally stays IDLE all the
+            # way to the lightweight idle runner, but two paths rewrite it
+            # into a full eager forward first: (a) dp-attention MLP-sync
+            # padding rewrites hybrid-SSM + spec idle batches to
+            # TARGET_VERIFY, and (b) spec workers (e.g. DFLASH) run eager
+            # lockstep idle verifies on dp-attention idle ranks. Both would
+            # then read the None default here and crash on
+            # `mrope_positions.dim()`. Materialize the empty (3, 0) mrope
+            # positions so those eager idle forwards see a well-formed
+            # (empty) mrope layout. Graph replay never reads this field for
+            # idle batches (load_batch does not copy it), so this is inert
+            # for the working graph path.
+            if model_runner.model_config.model_is_mrope:
+                ret.mrope_positions = torch.empty(
+                    (3, 0), dtype=torch.int64, device=device
+                )
             if model_runner.lora_manager is not None:
                 model_runner.lora_manager.reset_lora_batch()
             return ret
