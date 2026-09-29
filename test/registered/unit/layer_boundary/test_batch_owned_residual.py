@@ -74,6 +74,17 @@ class TestBatchOwnedResidual(CustomTestCase):
         self.assertIs(proxy["residual"], residual)
         self.assertIsNone(fb.residual_stream)
 
+    def test_pp_export_of_a_written_stream_sends_only_hidden_states(self):
+        # MHC writes its streams at the FFN exit, so nothing is pending.
+        fb = SimpleNamespace(residual_stream=None)
+        batch.start(fb)
+        streams = torch.randn(2, 4, 3)
+        batch.stream_of(fb).write(streams)
+        proxy = batch.to_pp(streams, fb)
+        self.assertEqual(set(proxy.tensors), {"hidden_states"})
+        self.assertIs(proxy["hidden_states"], streams)
+        self.assertIsNone(fb.residual_stream)
+
     def test_tbo_metadata_and_reused_batch_remain_stream_free_between_calls(self):
         size = 4
         parent = ForwardBatch(
