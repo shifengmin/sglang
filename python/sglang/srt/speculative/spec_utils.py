@@ -51,6 +51,7 @@ from sglang.srt.mem_cache.allocation import (
 )
 from sglang.srt.runtime_context import (
     get_exec,
+    get_parallel,
     get_spec,
     mamba_track_grid,
     max_speculative_num_draft_tokens,
@@ -752,6 +753,19 @@ def draft_tp_context(tp_group: GroupCoordinator, *, owns_attention: bool):
     # We disable mscclpp now because it doesn't support 2 comm groups.
     with patch_tensor_parallel_group(tp_group, owns_attention=owns_attention):
         yield
+
+
+def draft_scope(owns_attention: bool):
+    """Enter the TP placement a draft was built under.
+
+    A draft that owns its attention was built on the target's attention-TP
+    group; any other draft runs on the target's own TP placement, so there is
+    nothing to enter. Always entered from outside a draft scope, where
+    ``attn_tp_group`` is still the target's.
+    """
+    if not owns_attention:
+        return contextlib.nullcontext()
+    return draft_tp_context(get_parallel().attn_tp_group, owns_attention=True)
 
 
 def spec_stage_span(name: str):

@@ -1,5 +1,4 @@
 import logging
-from contextlib import nullcontext
 from typing import TYPE_CHECKING, Callable, Optional, Protocol, runtime_checkable
 
 import torch
@@ -74,7 +73,7 @@ from sglang.srt.speculative.spec_utils import (
     GrammarTree,
     build_grammar_vocab_mask,
     draft_pp_context,
-    draft_tp_context,
+    draft_scope,
     prepare_mamba_track_for_verify,
 )
 from sglang.srt.utils import (
@@ -423,9 +422,7 @@ class DSparkWorkerV2(BaseSpecWorker):
         return getattr(self.target_worker, name)
 
     def _draft_context(self):
-        if self._draft_dp_context_enabled:
-            return draft_tp_context(get_parallel().attn_tp_group, owns_attention=True)
-        return nullcontext()
+        return draft_scope(self._draft_dp_context_enabled)
 
     def alloc_memory_pool(
         self,

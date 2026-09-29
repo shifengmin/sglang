@@ -310,7 +310,7 @@ class TestDPSpecPrefillCoordinationWorker(CustomTestCase):
                     record("draft_extend", current)
                     return object()
 
-                def draft_context(group, *, owns_attention):
+                def draft_context(owns_attention):
                     self.assertEqual(owns_attention, bool(rank % 2))
                     return contextlib.nullcontext()
 
@@ -320,9 +320,7 @@ class TestDPSpecPrefillCoordinationWorker(CustomTestCase):
                 worker.speculative_algorithm = SpeculativeAlgorithm.EAGLE
                 worker._target_worker = SimpleNamespace(forward_batch_generation=target)
                 worker._draft_worker = SimpleNamespace(
-                    draft_runner=SimpleNamespace(tp_group=None),
                     draft_owns_attention=bool(rank % 2),
-                    draft_tp_context=draft_context,
                     draft=draft,
                     _draft_extend_for_prefill=extend,
                     _draft_extend_for_decode=extend,
@@ -339,6 +337,9 @@ class TestDPSpecPrefillCoordinationWorker(CustomTestCase):
                         patch(
                             f"{WORKER_MODULE}.ScheduleBatch.init_new", return_value=idle
                         )
+                    )
+                    stack.enter_context(
+                        patch(f"{WORKER_MODULE}.draft_scope", side_effect=draft_context)
                     )
                     stack.enter_context(
                         patch(

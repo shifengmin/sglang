@@ -102,7 +102,7 @@ class EagleDraftWorkerBase(ABC):
         pass
 
     def init_attention_backends(self):
-        """Subclasses wrap this with their context managers (draft_tp_context,
+        """Subclasses wrap this with their context managers (draft_scope,
         speculative_moe_backend_context, etc.) rather than reimplementing it."""
         self.draft_worker.init_attention_backends()
         self.init_attention_backend()
