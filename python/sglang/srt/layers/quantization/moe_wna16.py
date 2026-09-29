@@ -452,9 +452,10 @@ class MoeWNA16Method(FusedMoEMethodBase):
             if not layer.quant_config.has_zp and "qzeros" in weight_name:
                 return
 
-            tp_group = get_parallel().tp_group
-            device = tp_group.device
-            tp_rank = get_parallel().tp_rank
+            device = get_parallel().tp_group.device
+            # The qzeros are split into moe_tp_size shards, so index by the
+            # MoE-TP rank; under EP the full-TP rank runs past the shards.
+            moe_tp_rank = layer.moe_tp_rank
             loaded_weight = loaded_weight.to(device)
             shard_size = layer.intermediate_size_per_partition
 
@@ -494,7 +495,7 @@ class MoeWNA16Method(FusedMoEMethodBase):
             if "w13_qzeros" in weight_name:
                 tensor = loaded_weight.view(
                     layer.moe_tp_size, -1, loaded_weight.size(1)
-                )[tp_rank]
+                )[moe_tp_rank]
                 if shard_id == "w1":
                     param.data[expert_id, : shard_size // 2] = tensor
                 else:
@@ -502,7 +503,7 @@ class MoeWNA16Method(FusedMoEMethodBase):
             elif "w2_qzeros" in weight_name:
                 param.data[expert_id] = loaded_weight.view(
                     loaded_weight.size(0), layer.moe_tp_size, -1
-                )[:, tp_rank]
+                )[:, moe_tp_rank]
             else:
                 weight_loader(param, loaded_weight, weight_name, shard_id, expert_id)
 
