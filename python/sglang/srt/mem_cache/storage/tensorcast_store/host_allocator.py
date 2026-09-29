@@ -148,6 +148,21 @@ def format_tensorcast_rank_label(world_rank: int, world_size: int) -> str:
     return f"rank{world_rank}of{world_size}"
 
 
+def resolve_tensorcast_world_placement(
+    world_rank: int | None, world_size: int | None
+) -> tuple[int, int]:
+    """Return the given WORLD placement, or this process's when neither is given."""
+
+    if (world_rank is None) != (world_size is None):
+        raise ValueError("world_rank and world_size must be provided together")
+    if world_rank is None:
+        from sglang.srt.runtime_context import get_parallel
+
+        parallel = get_parallel()
+        return parallel.launch_world_rank, parallel.launch_world_size
+    return world_rank, cast(int, world_size)
+
+
 def build_tensorcast_session_options(
     config: TensorcastConfig,
     *,
@@ -169,16 +184,8 @@ def build_tensorcast_session_options(
             "--hicache-storage-backend tensorcast."
         ) from exc
 
-    if (world_rank is None) != (world_size is None):
-        raise ValueError("world_rank and world_size must be provided together")
-    if world_rank is None:
-        from sglang.srt.runtime_context import get_parallel
-
-        parallel = get_parallel()
-        world_rank = parallel.world_rank
-        world_size = parallel.world_size
-
-    rank_label = format_tensorcast_rank_label(world_rank, cast(int, world_size))
+    world_rank, world_size = resolve_tensorcast_world_placement(world_rank, world_size)
+    rank_label = format_tensorcast_rank_label(world_rank, world_size)
     if config.transfer_mode == TensorcastTransferMode.ALLOCATOR:
         transfer = AllocatorTransferOptions()
     else:
