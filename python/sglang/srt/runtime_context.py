@@ -165,16 +165,10 @@ def derive_parallel_widths(
 
 def parallel_widths_of(cfg: Any) -> dict:
     """Return derived parallel settings from resolved configuration."""
-    attn_dp_size, _ = derive_attention_widths(
-        tp_size=cfg.tp_size,
-        attn_cp_size=cfg.attn_cp_size,
-        dp_size=cfg.dp_size,
-        enable_dp_attention=cfg.enable_dp_attention,
-    )
     return derive_parallel_widths(
         tp_size=cfg.tp_size,
         attn_cp_size=cfg.attn_cp_size,
-        attn_dp_size=attn_dp_size,
+        attn_dp_size=attn_dp_size_of(cfg),
         moe_ep_size=cfg.ep_size,
         moe_dp_size=cfg.moe_dp_size,
         dcp_size=cfg.dcp_size,
@@ -195,14 +189,22 @@ def max_world_size_of(cfg: Any):
     return cfg.max_ep_size or launch_world_size_of(cfg)
 
 
+def attn_dp_size_of(cfg: Any):
+    """The attention data-parallel width of a DP layout: `dp_size` when DP
+    attention is on, otherwise one. `--attn-dp-size` resolves to this layout,
+    so the published `attn_dp_size` is recomputed from it; a layout declared
+    after resolution (a test's override_server_args) cannot leave it stale."""
+    return derive_attention_widths(
+        tp_size=cfg.tp_size,
+        attn_cp_size=cfg.attn_cp_size,
+        dp_size=cfg.dp_size,
+        enable_dp_attention=cfg.enable_dp_attention,
+    )[0]
+
+
 def attn_tp_size_of(cfg: Any):
     """`attn_tp_size`, computed at publish. See `parallel_widths_of`."""
     return parallel_widths_of(cfg)["attn_tp_size"]
-
-
-def attn_dp_size_of(cfg: Any):
-    """`attn_dp_size`, computed at publish. See `parallel_widths_of`."""
-    return parallel_widths_of(cfg)["attn_dp_size"]
 
 
 def attn_dcp_size_of(cfg: Any):
@@ -881,7 +883,22 @@ def _build_config_bags(server_args: Any) -> dict:
             )
         bag._set(field, value)
     _install_derived_leaves(tops, server_args)
+    _install_layout_widths(tops, server_args)
     return tops
+
+
+def _install_layout_widths(tops: dict, server_args: Any) -> None:
+    """Publish ``attn_dp_size`` as the width of the final DP layout.
+
+    ``--attn-dp-size`` is an input that resolution turns into ``dp_size`` and
+    ``enable_dp_attention``; readers need the width those fields describe.
+    """
+    parallel = tops.get("parallel")
+    if parallel is None or not hasattr(type(server_args), "_NAMESPACES"):
+        return
+    from sglang.srt.arg_groups.overrides import resolved_view
+
+    parallel._set("attn_dp_size", attn_dp_size_of(resolved_view(server_args)))
 
 
 def _install_derived_leaves(tops: dict, server_args: Any) -> None:

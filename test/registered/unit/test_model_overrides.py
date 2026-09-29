@@ -179,6 +179,7 @@ class TestModelOverridableWhitelist(CustomTestCase):
                     "ep_size",
                     "moe_dense_tp_size",
                     "attn_cp_size",
+                    "attn_dp_size",
                     "dcp_comm_backend",
                     "dcp_replicate_q_proj",
                     "disable_overlap_schedule",

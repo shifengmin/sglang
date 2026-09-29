@@ -38,6 +38,14 @@ def run_resolution_pipeline(server_args: Any) -> None:
 
     cfg = resolving_view(server_args)
 
+    from sglang.srt.arg_groups.parallel_hook import (
+        handle_attn_dp_size,
+        resolve_attn_dp_size,
+    )
+
+    # Before any handler reads dp_size or enable_dp_attention.
+    run_hook(handle_attn_dp_size, server_args)
+
     from sglang.srt.arg_groups.mega_moe_hook import handle_mega_moe
 
     run_hook(handle_mega_moe, server_args)
@@ -95,6 +103,7 @@ def run_resolution_pipeline(server_args: Any) -> None:
         from sglang.srt.arg_groups.boundary_reduction import resolve_boundary_reduction
 
         run_post_process_pass(server_args, resolve_boundary_reduction)
+        run_post_process_pass(server_args, resolve_attn_dp_size)
         return
 
     from sglang.srt.arg_groups.model_path_hook import (
@@ -338,5 +347,8 @@ def run_resolution_pipeline(server_args: Any) -> None:
     # Validate after all batch-size declarations are visible.
     run_hook(validate_deepep_v2_speculative_draft, server_args)
     run_hook(validate_deepep_v2_dispatch_token_budget, server_args)
+
+    # After every handler that sets dp_size or enable_dp_attention.
+    run_post_process_pass(server_args, resolve_attn_dp_size)
 
     server_args._resolution_finished = True

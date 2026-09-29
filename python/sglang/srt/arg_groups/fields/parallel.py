@@ -98,6 +98,17 @@ class Parallel(msgspec.Struct):
             resolvable=True,
         ),
     ] = 1
+    attn_dp_size: A[
+        Optional[int],
+        Arg(
+            help="The attention data parallelism size: the number of "
+            "data-parallel attention groups inside the TP group, while the FFN "
+            "stays tensor parallel. Replaces --enable-dp-attention. Without "
+            "--dp-size, --dp-size defaults to this value. Defaults to 1.",
+            aliases=["--attention-data-parallel-size"],
+            resolvable=True,
+        ),
+    ] = None
     moe_dp_size: A[
         int,
         Arg(
@@ -163,7 +174,7 @@ class Parallel(msgspec.Struct):
     enable_dp_attention: A[
         bool,
         Arg(
-            help="Enabling data parallelism for attention and tensor parallelism for FFN. The dp size should be equal to the tp size. Currently DeepSeek-V2 and Qwen 2/3 MoE models are supported.",
+            help="Deprecated: use --attn-dp-size <dp-size>. Enable data parallelism for attention and tensor parallelism for FFN, with --dp-size attention data-parallel groups.",
             resolvable=True,
         ),
     ] = False
@@ -281,11 +292,6 @@ class Parallel(msgspec.Struct):
         fn="sglang.srt.runtime_context.attn_tp_size_of",
         doc="Attention tensor-parallel width: `tp_size` divided by the "
         "attention-DP and attention-CP dimensions.",
-    )
-    attn_dp_size = Derived(
-        fn="sglang.srt.runtime_context.attn_dp_size_of",
-        doc="Attention data-parallel width: `dp_size` when DP attention is "
-        "on, otherwise one.",
     )
     attn_dcp_size = Derived(
         fn="sglang.srt.runtime_context.attn_dcp_size_of",

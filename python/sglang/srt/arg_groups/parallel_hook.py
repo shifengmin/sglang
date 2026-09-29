@@ -29,6 +29,51 @@ from sglang.srt.utils.common import parse_connector_type
 logger = logging.getLogger(__name__)
 
 
+def handle_attn_dp_size(server_args: Any):
+    """Turn --attn-dp-size into the data-parallel layout the handlers read, and
+    warn on the deprecated --enable-dp-attention spelling.
+
+    Runs before any handler reads dp_size or enable_dp_attention. With N > 1,
+    DP attention runs N attention data-parallel groups inside the TP group, one
+    scheduler each, so dp_size becomes N. An elastic EP scale joiner runs DP
+    attention at a local width of one.
+    """
+    cfg = resolving_view(server_args)
+    size = cfg.attn_dp_size
+    if cfg.enable_dp_attention:
+        logger.warning(
+            "--enable-dp-attention is deprecated and will be removed in a future "
+            "release. Use --attn-dp-size %d instead.",
+            size or cfg.dp_size,
+        )
+    if size is None:
+        return
+    if size < 1:
+        raise ValueError(f"--attn-dp-size must be positive (got {size}).")
+    if size == 1 and cfg.ep_join_mode != "scale":
+        if cfg.enable_dp_attention and cfg.dp_size != 1:
+            raise ValueError(
+                "--attn-dp-size 1 disables DP attention, which --enable-dp-attention "
+                "requests; pass --attn-dp-size alone."
+            )
+        return
+    if cfg.dp_size not in (1, size):
+        raise ValueError(
+            f"--dp-size {cfg.dp_size} does not match --attn-dp-size {size}: "
+            "data-parallel replicas combined with attention data parallelism are "
+            "not supported. Pass --attn-dp-size alone."
+        )
+    declare_resolution(
+        server_args, "_handle_attn_dp_size", dp_size=size, enable_dp_attention=True
+    )
+
+
+def resolve_attn_dp_size(view: Any) -> dict:
+    """The published attention data-parallel width, from the final layout: the
+    DP-attention groups when DP attention is on, otherwise one."""
+    return {"attn_dp_size": view.dp_size if view.enable_dp_attention else 1}
+
+
 def _boundary_parallelism_overrides(cfg, model_type: str) -> dict:
     """Resolve the token-row modes the model's forward actually enters."""
     nemotron = model_type in ("nemotron_h", "nemotron_h_puzzle")
@@ -583,7 +628,7 @@ def handle_elastic_ep(server_args: Any):
                 "Elastic EP CUDA graph recapture does not support PDMux."
             )
         assert resolved.enable_dp_attention, (
-            "Elastic EP scale-up requires --enable-dp-attention; without it "
+            "Elastic EP scale-up requires DP attention (--attn-dp-size); without it "
             "the TP group is not equivalent to WORLD and the post-scale "
             "collective path is invalid."
         )
