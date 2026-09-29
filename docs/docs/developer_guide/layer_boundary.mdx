@@ -14,8 +14,8 @@ A boundary connects a **producer output** to a **consumer input**. An attention-
 | Responsibility | Owner |
 | --- | --- |
 | Attention, projections, activation functions, expert routing, EP dispatch/combine | Model compute modules |
-| How a producer contributes to the residual | Producer's `StageUpdate` |
-| How a consumer reads the residual | Consumer's `StageRead` and norm |
+| How a producer contributes to the residual | Producer's `ResidualUpdate` |
+| How a consumer reads the residual | Consumer's `ResidualReadout` and norm |
 | Supported row transitions and reduction ordering | Bound boundary paths |
 | Actual outstanding work and residual tensors | Per-forward `ResidualStream` |
 | Hardware-specific fused completion | Fusion providers |
@@ -77,12 +77,12 @@ Always retain the returned tensor or handle after each of these calls. A stack-e
 
 ### Residual update and input read
 
-The producer owns `StageUpdate`; the consumer owns `StageRead` and its norm. The actual update travels with the contribution. Bound paths use declared update capabilities to select valid ordering:
+The producer owns `ResidualUpdate`; the consumer owns `ResidualReadout` and its norm. The actual update travels with the contribution. Bound paths use declared update capabilities to select valid ordering:
 
 - A plain add can participate in compatible fused add+norm kernels or add the residual on one rank before summation.
 - A nonlinear update cannot generally move before reduction. The post operation of manifold-constrained hyper-connections (MHC) is one such case.
-- `at_producer` requests an update at the producer exit. A deferred update must guarantee that its parameters and state outlive that producer.
-- `StageRead.before_gather` preserves reads that must execute on the source rows before a DP gather.
+- `applied_at_exit` requests an update at the producer exit. A deferred update must guarantee that its parameters and state outlive that producer.
+- `ResidualReadout.reads_before_dp_gather` preserves reads that must execute on the source rows before a DP gather.
 
 A read returns `(compute_input, residual)`. `update_and_read()` receives the producer's update together with the read, so an implementation can fuse them: the plain add+norm read does, and keeps its FP32 accumulation instead of normalizing a separately rounded snapshot. Fusion is not guaranteed. An implementation such as MHC may run the update and the read as separate steps, provided it preserves its existing rounding order.
 
@@ -305,7 +305,7 @@ Paths in this table are relative to `python/sglang/srt/layers/layer_boundary/`.
 | `stage.py` | Model-facing `StageBoundary` methods |
 | `exit.py` | Select output completion and publish scoped compute flags |
 | `output.py` | Internal reduction/finalize handoffs and output transforms |
-| `residual/__init__.py` | `StageUpdate`/`StageRead` protocols and `LayerResidual` |
+| `residual/__init__.py` | `ResidualUpdate`/`ResidualReadout` protocols and `LayerResidualOps` |
 | `residual/stream.py` | Per-forward state and ownership of outstanding work |
 | `residual/batch.py` | Model-stack entry, final norm, pipeline-parallel (PP) transport, snapshots, and extra contributions |
 | `residual/access.py` | Tensor access and materialization helpers |
