@@ -498,7 +498,7 @@ class ModelRunner:
         join_effective_ep_size = (
             get_parallel().ep_join_rank_offset + get_parallel().tp_size
         )
-        dist.barrier(group=self.tp_group.cpu_group)
+        dist.barrier(group=get_parallel().tp_group.cpu_group)
         if get_parallel().tp_rank == 0:
             register_scale_cohort(
                 get_parallel().ep_join_rank_offset,
@@ -957,7 +957,7 @@ class ModelRunner:
             tp_group=(
                 get_parallel().attn_tp_group.cpu_group
                 if get_parallel().enable_dp_attention
-                else self.tp_group.cpu_group
+                else get_parallel().tp_group.cpu_group
             ),
             host_to_device_ratio=hisparse_cfg.host_to_device_ratio,
             swap_in_block_size=hisparse_cfg.swap_in_block_size,
@@ -1169,13 +1169,10 @@ class ModelRunner:
         self.pre_model_load_memory = bootstrap.measure_pre_model_load_memory(
             device=self.device, is_draft_worker=self.is_draft_worker
         )
-        # A draft runner is used outside the scope it is built in: speculative
-        # workers re-enter that scope through its TP group, and draft forwards
-        # read its PP group without the pipeline scope. Keep both groups; read
-        # every other placement value from the context where it is used.
-        parallel = get_parallel()
-        self.tp_group = parallel.tp_group
-        self.pp_group = parallel.pp_group
+        # Draft forwards run without the pipeline scope the draft is built in,
+        # so keep the PP group it was built with; read every other placement
+        # value from the context where it is used.
+        self.pp_group = get_parallel().pp_group
 
     def load_model(self):
         tic_total = time.perf_counter()
@@ -2313,7 +2310,7 @@ class ModelRunner:
                 return
 
             recovered = maybe_recover_ep_ranks(
-                tp_group=self.tp_group,
+                tp_group=get_parallel().tp_group,
                 eplb_manager=self.eplb_manager,
                 model_config=self.model_config,
                 moe_ep_rank=self._elastic_global_rank(),
